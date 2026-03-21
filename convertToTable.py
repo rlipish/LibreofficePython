@@ -46,6 +46,10 @@ def convert_to_table(*args):
     bold = uno.getConstantByName("com.sun.star.awt.FontWeight.BOLD")
     header_range.CharWeight = bold
 
+    # Clear existing row colors before re-banding
+    data_range = sheet.getCellRangeByPosition(0, 1, end_pos.EndColumn, end_pos.EndRow)
+    data_range.CellBackColor = -1
+
     for row_idx in range(1, end_pos.EndRow + 1):
         target_row = sheet.getCellRangeByPosition(0, row_idx, end_pos.EndColumn, row_idx)
         if row_idx % 2 == 0:
@@ -59,19 +63,56 @@ def convert_to_table(*args):
 
 
 def show_message_box(doc, title, message):
-    parent_window = doc.getCurrentController().getFrame().getContainerWindow()
-    toolkit = parent_window.getToolkit()
-    YES_NO = uno.getConstantByName("com.sun.star.awt.MessageBoxButtons.BUTTONS_YES_NO")
-    IDYES  = uno.getConstantByName("com.sun.star.awt.MessageBoxResults.YES")
+    ctx = uno.getComponentContext()
+    smgr = ctx.ServiceManager
+    dp = smgr.createInstanceWithContext("com.sun.star.awt.DialogProvider", ctx)
 
-    msgbox = toolkit.createMessageBox(
-        parent_window,
-        uno.Enum("com.sun.star.awt.MessageBoxType", "QUERYBOX"),
-        YES_NO,
-        title,
-        message
-    )
-    return msgbox.execute() == IDYES
+    # Build dialog programmatically
+    dialog_model = smgr.createInstanceWithContext("com.sun.star.awt.UnoControlDialogModel", ctx)
+    dialog_model.Width  = 220
+    dialog_model.Height = 70
+    dialog_model.Title  = title
+
+    # Label
+    label_model = dialog_model.createInstance("com.sun.star.awt.UnoControlFixedTextModel")
+    label_model.PositionX = 10
+    label_model.PositionY = 10
+    label_model.Width     = 200
+    label_model.Height    = 25
+    label_model.Label     = message
+    label_model.MultiLine = True
+    dialog_model.insertByName("lbl", label_model)
+
+    # Yes button — PushButtonType 1 = OK, makes it the default/Enter button
+    yes_model = dialog_model.createInstance("com.sun.star.awt.UnoControlButtonModel")
+    yes_model.PositionX     = 60
+    yes_model.PositionY     = 45
+    yes_model.Width         = 40
+    yes_model.Height        = 15
+    yes_model.Label         = "Yes"
+    yes_model.PushButtonType = 1   # OK — accepts on Enter
+    yes_model.DefaultButton  = True
+    dialog_model.insertByName("btnYes", yes_model)
+
+    # No button — PushButtonType 2 = CANCEL
+    no_model = dialog_model.createInstance("com.sun.star.awt.UnoControlButtonModel")
+    no_model.PositionX      = 110
+    no_model.PositionY      = 45
+    no_model.Width          = 40
+    no_model.Height         = 15
+    no_model.Label          = "No"
+    no_model.PushButtonType = 2   # CANCEL
+    dialog_model.insertByName("btnNo", no_model)
+
+    # Show it
+    dialog_ctrl = smgr.createInstanceWithContext("com.sun.star.awt.UnoControlDialog", ctx)
+    dialog_ctrl.setModel(dialog_model)
+    parent_window = doc.getCurrentController().getFrame().getContainerWindow()
+    dialog_ctrl.createPeer(parent_window.getToolkit(), parent_window)
+    result = dialog_ctrl.execute()
+    dialog_ctrl.dispose()
+
+    return result == 1  # 1 = OK/Yes, 0 = Cancel/No
 
 
 g_exportedScripts = (convert_to_table,)
