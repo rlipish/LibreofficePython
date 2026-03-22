@@ -1,4 +1,6 @@
 import uno
+import unohelper
+from com.sun.star.awt import XKeyListener
 
 def convert_to_table(*args):
     desktop = XSCRIPTCONTEXT.getDesktop()
@@ -12,7 +14,12 @@ def convert_to_table(*args):
     if end_pos.EndColumn == 0 and end_pos.EndRow == 0:
         return
 
-    has_headers = show_message_box(model, "Table Headers", "Does your data have headers in the first row?")
+    result = show_message_box(model, "Table Headers", "Does your data have headers in the first row?")
+
+    if result is None:  # User cancelled / hit X
+        return
+
+    has_headers = result
 
     if not has_headers:
         sheet.getRows().insertByIndex(0, 1)
@@ -46,7 +53,6 @@ def convert_to_table(*args):
     bold = uno.getConstantByName("com.sun.star.awt.FontWeight.BOLD")
     header_range.CharWeight = bold
 
-    # Clear existing row colors before re-banding
     data_range = sheet.getCellRangeByPosition(0, 1, end_pos.EndColumn, end_pos.EndRow)
     data_range.CellBackColor = -1
 
@@ -65,54 +71,113 @@ def convert_to_table(*args):
 def show_message_box(doc, title, message):
     ctx = uno.getComponentContext()
     smgr = ctx.ServiceManager
-    dp = smgr.createInstanceWithContext("com.sun.star.awt.DialogProvider", ctx)
 
-    # Build dialog programmatically
     dialog_model = smgr.createInstanceWithContext("com.sun.star.awt.UnoControlDialogModel", ctx)
     dialog_model.Width  = 220
-    dialog_model.Height = 70
+    dialog_model.Height = 90
     dialog_model.Title  = title
 
-    # Label
+    # Message label
     label_model = dialog_model.createInstance("com.sun.star.awt.UnoControlFixedTextModel")
     label_model.PositionX = 10
-    label_model.PositionY = 10
+    label_model.PositionY = 8
     label_model.Width     = 200
     label_model.Height    = 25
     label_model.Label     = message
     label_model.MultiLine = True
     dialog_model.insertByName("lbl", label_model)
 
-    # Yes button — PushButtonType 1 = OK, makes it the default/Enter button
+    # Instruction label
+    hint_model = dialog_model.createInstance("com.sun.star.awt.UnoControlFixedTextModel")
+    hint_model.PositionX = 10
+    hint_model.PositionY = 34
+    hint_model.Width     = 200
+    hint_model.Height    = 12
+    hint_model.Label     = "Type Y or N, or click a button:"
+    dialog_model.insertByName("hint", hint_model)
+
+    # Hidden text field that captures typing — starts with focus
+    edit_model = dialog_model.createInstance("com.sun.star.awt.UnoControlEditModel")
+    edit_model.PositionX  = 80
+    edit_model.PositionY  = 46
+    edit_model.Width      = 1
+    edit_model.Height     = 1
+    edit_model.MaxTextLen = 1
+    dialog_model.insertByName("capture", edit_model)
+
+    # Yes button
     yes_model = dialog_model.createInstance("com.sun.star.awt.UnoControlButtonModel")
-    yes_model.PositionX     = 60
-    yes_model.PositionY     = 45
-    yes_model.Width         = 40
-    yes_model.Height        = 15
-    yes_model.Label         = "Yes"
-    yes_model.PushButtonType = 1   # OK — accepts on Enter
-    yes_model.DefaultButton  = True
+    yes_model.PositionX      = 40
+    yes_model.PositionY      = 68
+    yes_model.Width          = 50
+    yes_model.Height         = 15
+    yes_model.Label          = "Yes (Y)"
+    yes_model.PushButtonType = 0
+    yes_model.DefaultButton  = False
     dialog_model.insertByName("btnYes", yes_model)
 
-    # No button — PushButtonType 2 = CANCEL
+    # No button
     no_model = dialog_model.createInstance("com.sun.star.awt.UnoControlButtonModel")
-    no_model.PositionX      = 110
-    no_model.PositionY      = 45
-    no_model.Width          = 40
+    no_model.PositionX      = 115
+    no_model.PositionY      = 68
+    no_model.Width          = 50
     no_model.Height         = 15
-    no_model.Label          = "No"
-    no_model.PushButtonType = 2   # CANCEL
+    no_model.Label          = "No (N)"
+    no_model.PushButtonType = 0
     dialog_model.insertByName("btnNo", no_model)
 
-    # Show it
     dialog_ctrl = smgr.createInstanceWithContext("com.sun.star.awt.UnoControlDialog", ctx)
     dialog_ctrl.setModel(dialog_model)
     parent_window = doc.getCurrentController().getFrame().getContainerWindow()
     dialog_ctrl.createPeer(parent_window.getToolkit(), parent_window)
-    result = dialog_ctrl.execute()
+
+    state = {"result": None}
+
+    from com.sun.star.awt import XActionListener, XTextListener
+
+    # Button click handlers
+    class ActionHandler(unohelper.Base, XActionListener):
+        def __init__(self, dlg, answer):
+            self.dlg = dlg
+            self.answer = answer
+
+        def actionPerformed(self, event):
+            state["result"] = self.answer
+            self.dlg.endExecute()
+
+    dialog_ctrl.getControl("btnYes").addActionListener(ActionHandler(dialog_ctrl, True))
+    dialog_ctrl.getControl("btnNo").addActionListener(ActionHandler(dialog_ctrl, False))
+
+    # Text change handler on the hidden capture field
+    class TextHandler(unohelper.Base, XTextListener):
+        def __init__(self, dlg, edit_ctrl):
+            self.dlg = dlg
+            self.edit = edit_ctrl
+
+        def textChanged(self, event):
+            text = self.edit.getText().upper()
+            if text == "Y":
+                state["result"] = True
+                self.dlg.endExecute()
+            elif text == "N":
+                state["result"] = False
+                self.dlg.endExecute()
+            else:
+                self.edit.setText("")  # clear anything else
+
+        def disposing(self, event):
+            pass
+
+    capture_ctrl = dialog_ctrl.getControl("capture")
+    capture_ctrl.addTextListener(TextHandler(dialog_ctrl, capture_ctrl))
+
+    # Give the capture field focus immediately so typing works right away
+    capture_ctrl.setFocus()
+
+    dialog_ctrl.execute()
     dialog_ctrl.dispose()
 
-    return result == 1  # 1 = OK/Yes, 0 = Cancel/No
+    return state["result"]
 
 
 g_exportedScripts = (convert_to_table,)
